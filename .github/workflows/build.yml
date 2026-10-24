@@ -1,0 +1,283 @@
+name: Build APK FloatAI
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Generate Project Files
+        run: |
+          mkdir -p app/src/main/java/com/example/floatai
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/values
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "FloatAI"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins { id 'com.android.application' version '8.2.2' apply false; id 'org.jetbrains.kotlin.android' version '1.9.22' apply false }
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+          android {
+              namespace 'com.example.floatai'
+              compileSdk 34
+              defaultConfig { applicationId "com.example.floatai"; minSdk 24; targetSdk 34; versionCode 1; versionName "1.0" }
+              buildTypes { 
+                  release { minifyEnabled false } 
+                  debug { minifyEnabled false }
+              }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/themes.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar" />
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <application android:allowBackup="true" android:label="FloatAI" android:theme="@style/AppTheme">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".FloatingService" android:foregroundServiceType="dataSync" android:exported="false"/>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_notification.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFF" android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,17c-0.55,0 -1,-0.45 -1,-1s0.45,-1 1,-1 1,0.45 1,1 -0.45,1 -1,1zM13,13h-2V7h2v6z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/activity_main.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:padding="24dp">
+              <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="FloatAI - Asisten Belajar" android:textSize="22sp" android:textStyle="bold" android:layout_marginBottom="24dp"/>
+              <Button android:id="@+id/btnStart" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Aktifkan Jendela Mengambang"/>
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/floating_bubble.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="vertical" android:background="#CC000000" android:padding="8dp">
+              <TextView android:id="@+id/tvBubble" android:layout_width="60dp" android:layout_height="60dp" android:text="AI" android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="18sp" android:gravity="center" android:background="@android:drawable/btn_default"/>
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/layout/floating_answer.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="300dp" android:layout_height="wrap_content" android:orientation="vertical" android:background="#EE1E1E1E" android:padding="12dp">
+              <TextView android:id="@+id/tvAnswer" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="#FFFFFF" android:textSize="14sp" android:maxHeight="400dp" android:scrollbars="vertical"/>
+          </LinearLayout>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/floatai/MainActivity.kt
+          package com.example.floatai
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+                  findViewById<Button>(R.id.btnStart).setOnClickListener {
+                      if (!Settings.canDrawOverlays(this)) {
+                          startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                      } else {
+                          startService(Intent(this, FloatingService::class.java))
+                          finish()
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/floatai/FloatingService.kt
+          package com.example.floatai
+          import android.app.*
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.PixelFormat
+          import android.os.*
+          import android.view.*
+          import android.widget.TextView
+          import android.widget.Toast
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.OutputStreamWriter
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import kotlin.concurrent.thread
+
+          class FloatingService : Service() {
+              private lateinit var windowManager: WindowManager
+              private lateinit var bubbleView: View
+              private var answerView: View? = null
+              
+              private val API_KEY = "MASUKKAN_API_KEY_ANDA_DISINI"
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val channelId = "float_ai"
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(channelId, "FloatAI", NotificationManager.IMPORTANCE_LOW)
+                      getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+                  }
+                  val notif = Notification.Builder(this, channelId).setContentTitle("FloatAI aktif").setSmallIcon(R.drawable.ic_notification).build()
+                  startForeground(1, notif)
+                  showBubble()
+              }
+
+              private fun showBubble() {
+                  windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+                  bubbleView = LayoutInflater.from(this).inflate(R.layout.floating_bubble, null)
+                  val params = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                  )
+                  params.gravity = Gravity.TOP or Gravity.START
+                  params.x = 100; params.y = 300
+                  bubbleView.findViewById<TextView>(R.id.tvBubble).setOnTouchListener(object : View.OnTouchListener {
+                      var initialX = 0; var initialY = 0; var touchX = 0f; var touchY = 0f
+                      override fun onTouch(v: View, event: MotionEvent): Boolean {
+                          when (event.action) {
+                              MotionEvent.ACTION_DOWN -> { initialX = params.x; initialY = params.y; touchX = event.rawX; touchY = event.rawY; return true }
+                              MotionEvent.ACTION_MOVE -> { params.x = initialX + (event.rawX - touchX).toInt(); params.y = initialY + (event.rawY - touchY).toInt(); windowManager.updateViewLayout(bubbleView, params); return true }
+                              MotionEvent.ACTION_UP -> { if (Math.abs(event.rawX - touchX) < 10 && Math.abs(event.rawY - touchY) < 10) readClipboardAndAsk(); return true }
+                          }
+                          return false
+                      }
+                  })
+                  windowManager.addView(bubbleView, params)
+              }
+
+              private fun readClipboardAndAsk() {
+                  val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                  if (!clipboard.hasPrimaryClip()) {
+                      Toast.makeText(this, "Copy teks soalnya dulu ya!", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+                  if (text.isNullOrBlank()) {
+                      Toast.makeText(this, "Teks kosong", Toast.LENGTH_SHORT).show()
+                  } else {
+                      askAI(text)
+                  }
+              }
+
+              private fun askAI(question: String) {
+                  Toast.makeText(this, "AI Berpikir...", Toast.LENGTH_SHORT).show()
+                  thread {
+                      try {
+                          val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$API_KEY")
+                          val conn = url.openConnection() as HttpURLConnection
+                          conn.requestMethod = "POST"
+                          conn.setRequestProperty("Content-Type", "application/json")
+                          conn.doOutput = true
+
+                          val bodyJson = JSONObject().apply {
+                              put("contents", JSONArray().apply { put(JSONObject().apply { put("parts", JSONArray().apply { put(JSONObject().put("text", "Jelaskan jawaban soal ini langkah demi langkah:\n\n$question")) }) }) })
+                          }
+
+                          val os = OutputStreamWriter(conn.outputStream)
+                          os.write(bodyJson.toString())
+                          os.flush()
+                          os.close()
+
+                          val responseCode = conn.responseCode
+                          if (responseCode == 200) {
+                              val reader = BufferedReader(InputStreamReader(conn.inputStream))
+                              val response = StringBuilder()
+                              var line: String?
+                              while (reader.readLine().also { line = it } != null) {
+                                  response.append(line)
+                              }
+                              reader.close()
+                              
+                              val answer = try {
+                                  JSONObject(response.toString()).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                              } catch (e: Exception) { "Gagal parse API" }
+                              
+                              Handler(Looper.getMainLooper()).post { showResult(answer) }
+                          } else {
+                              Handler(Looper.getMainLooper()).post { showResult("Error API: $responseCode") }
+                          }
+                      } catch (e: Exception) {
+                          Handler(Looper.getMainLooper()).post { showResult("Error Jaringan: ${e.message}") }
+                      }
+                  }
+              }
+
+              private fun showResult(text: String) {
+                  if (answerView == null) {
+                      answerView = LayoutInflater.from(this).inflate(R.layout.floating_answer, null)
+                      val params = WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                      )
+                      params.gravity = Gravity.CENTER
+                      answerView!!.findViewById<TextView>(R.id.tvAnswer).setOnClickListener {
+                          windowManager.removeView(answerView); answerView = null
+                      }
+                      windowManager.addView(answerView, params)
+                  }
+                  answerView!!.findViewById<TextView>(R.id.tvAnswer).text = text
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew || true
+          gradle wrapper --gradle-version 8.5
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: FloatAI-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
